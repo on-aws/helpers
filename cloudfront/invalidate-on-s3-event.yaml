@@ -157,12 +157,14 @@ Resources:
           function getS3Objects(Records) {
             let result = [];
             Records.forEach((r) => {
-              result = result.concat(JSON.parse(r.body).Records
-                .filter(e => e.Event !== 's3:TestEvent' && e.eventSource === 'aws:s3')
-                .map((o) => {
-                  return { bucket: o.s3.bucket.name, key: o.s3.object.key };
-                })
-              );
+              let innerRecords = JSON.parse(r.body).Records;
+              if (innerRecords) {
+                result = result.concat(innerRecords.filter(e => e.Event !== 's3:TestEvent' && e.eventSource === 'aws:s3')
+                  .map((o) => {
+                    return { bucket: o.s3.bucket.name, key: o.s3.object.key };
+                  })
+                );
+              }
             });
             return groupByBucket(result);
           }
