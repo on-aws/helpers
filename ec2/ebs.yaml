@@ -7,12 +7,11 @@ Parameters:
   Tag:
     Description: We tag all AWS resources for your convenience.
     Type: String
-    Default: on-aws
+    MinLength: 3
 
   ClusterSize:
     Description: How many EC2 instances
     Type: Number
-    Default: 3
 
 Resources:
   Queue:
@@ -104,45 +103,34 @@ Resources:
           'use strict';
           const AWS = require('aws-sdk');
           const ec2 = new AWS.EC2();
+          const cloudwatch = new AWS.CloudWatch();
           exports.handler = async (event) => {
             console.log(JSON.stringify(event));
             const msg = JSON.parse(event.Records[0].body);
             const { SpotInstanceRequests } = await ec2.describeSpotInstanceRequests({ SpotInstanceRequestIds: [msg.detail['spot-instance-request-id']] }).promise();
-            const LaunchedAvailabilityZone = SpotInstanceRequests[0].LaunchedAvailabilityZone;
-            console.log({ LaunchedAvailabilityZone });
+            const LaunchedAZ = SpotInstanceRequests[0].LaunchedAvailabilityZone;
+            console.log({ LaunchedAZ });
             const { Volumes } = await getVolumes();
             if(isFreshStart(Volumes)) {
-              const volumeName = getNextAvaialbleName(Volumes);
-              Volumes.unshift( await createVolume(volumeName, LaunchedAvailabilityZone) );
-              await publishMetric('VolumeCreate', volumeName);
+              Volumes.unshift( await createVolume(getNextAvaialbleName(Volumes), LaunchedAZ) );
             }
-            const VolumesInTheSameZone = getAvailableVolumesByAz(Volumes, LaunchedAvailabilityZone);
+            const VolumesInTheSameZone = getAvailableVolumesByAz(Volumes, LaunchedAZ);
             if(VolumesInTheSameZone.length > 0) {
               return attachVolume(msg.detail['instance-id'], VolumesInTheSameZone[0]);
             } else {
               const allAvailableVolumes = getAvailableVolumes(Volumes);
               if(allAvailableVolumes.length > 0) {
                 const avaialbleVolume = allAvailableVolumes[0];
-                const newVolume = await copyVolume(avaialbleVolume, LaunchedAvailabilityZone);
-                await publishMetric('VolumeCopy', getVolumeName(avaialbleVolume));
+                const newVolume = await copyVolume(avaialbleVolume, LaunchedAZ);
                 await deleteVolume(avaialbleVolume);
-                await publishMetric('VolumeDelete', getVolumeName(avaialbleVolume));
                 return attachVolume(msg.detail['instance-id'], newVolume);
-              } else {
-                // There are might be no volumes avaialble
-                // This happens if Autoscaling decided to prelaunch a new instance to recycle an existing one
-                // Return message back to queue by throwing error
-                throw new Error('Volumes are not available');
-             }
+              } else { throw new Error('Volumes are not available'); }
             }
           };
 
           async function getVolumes() {
             return ec2.describeVolumes({
-              Filters: [{
-                Name: 'tag:Name',
-                Values: [...Array(process.env.ClusterSize).keys()].map(x => ${Tag} + '-' + (x + 1))
-                }]
+              Filters: [{Name:'tag:Name',Values: [...Array(process.env.ClusterSize).keys()].map(x => '${Tag}'+'-'+(x+1))}]
             }).promise();
           }
 
@@ -158,8 +146,8 @@ Resources:
             return Volume.Tags.find(t => t.Key === 'Name').Value;
           }
 
-          function getAvailableVolumesByAz(Volumes, AvailabilityZone) {
-            return Volumes.filter( v => ['available', 'creating'].includes(v.State) && v.AvailabilityZone === AvailabilityZone);
+          function getAvailableVolumesByAz(Volumes, AZ) {
+            return Volumes.filter( v => ['available', 'creating'].includes(v.State) && v.AvailabilityZone === AZ);
           }
 
           function getAvailableVolumes(Volumes) {
@@ -168,16 +156,7 @@ Resources:
 
           function publishMetric(MetricName, VolumeName) {
             return cloudwatch.putMetricData({
-              Namespace: 'ON-AWS',
-              MetricData: [
-                MetricName,
-                Unit: 'Count',
-                Value: 1,
-                Dimensions: [{
-                  Name: 'VolumeName',
-                  Value: VolumeName
-                }]
-              ]
+              Namespace: 'ON-AWS', MetricData: [{MetricName,Unit:'Count',Value:1,Dimensions:[{Name:'VolumeName',Value:VolumeName}]}]
             }).promise();
           }
 
@@ -195,7 +174,9 @@ Resources:
             };
             if(SnapshotId) {
               params.SnapshotId = SnapshotId;
+              await publishMetric('VolumeCopy', Name);
             } else {
+              await publishMetric('VolumeCreate', Name);
               params.Size = 10;
             }
             return ec2.createVolume(params).promise();
@@ -213,33 +194,20 @@ Resources:
                 }]
               }]
             }).promise();
-            do {
-              var { Snapshots }  = await ec2.describeSnapshots({ SnapshotIds: [ SnapshotId ] }).promise();
-            } while (Snapshots[0].State !== 'completed');
+            do { var { Snapshots }  = await ec2.describeSnapshots({ SnapshotIds: [ SnapshotId ] }).promise(); } while (Snapshots[0].State !== 'completed');
             return createVolume(getVolumeName(Volume), TargetAvailabilityZone, SnapshotId);
           }
 
           async function attachVolume(InstanceId, Volume) {
-            do {
-              var { Reservations }  = await ec2.describeInstances({ InstanceIds: [ InstanceId ] }).promise();
-            } while (Reservations[0].Instances[0].State.Name === 'pending');
-            do {
-              var { Volumes }  = await ec2.describeVolumes({ VolumeIds: [ Volume.VolumeId ] }).promise();
-            } while (Volumes[0].State === 'creating');
-
-            return ec2.attachVolume({
-              Device: '/dev/sdf',
-              InstanceId,
-              VolumeId: Volume.VolumeId
-            }).promise();
+            do { var { Reservations }  = await ec2.describeInstances({ InstanceIds: [ InstanceId ] }).promise(); } while (Reservations[0].Instances[0].State.Name === 'pending');
+            do { var { Volumes }  = await ec2.describeVolumes({ VolumeIds: [ Volume.VolumeId ] }).promise(); } while (Volumes[0].State === 'creating');
+            return ec2.attachVolume({Device: '/dev/sdf',InstanceId,VolumeId:Volume.VolumeId}).promise();
           }
 
           async function deleteVolume(Volume) {
-            return ec2.deleteVolume({
-              VolumeId: Volume.VolumeId
-            }).promise();
+            await ec2.deleteVolume({VolumeId: Volume.VolumeId}).promise();
+            return publishMetric('VolumeDelete', getVolumeName(Volume));
           }
-
 
   LambdaLogGroup:
     Type: AWS::Logs::LogGroup
