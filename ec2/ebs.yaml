@@ -111,7 +111,9 @@ Resources:
             const LaunchedAZ = SpotInstanceRequests[0].LaunchedAvailabilityZone;
             console.log({ LaunchedAZ });
             const { Volumes } = await getVolumes();
+            console.log({ Volumes });
             if(isFreshStart(Volumes)) {
+              console.log('Fresh Start');
               Volumes.unshift( await createVolume(getNextAvaialbleName(Volumes), LaunchedAZ) );
             }
             const VolumesInTheSameZone = getAvailableVolumesByAz(Volumes, LaunchedAZ);
@@ -129,8 +131,10 @@ Resources:
           };
 
           async function getVolumes() {
+            const Values = [...Array(process.env.ClusterSize).keys()].map(x => '${Tag}'+'-'+(x+1));
+            console.log('getVolumes', JSON.stringify(Values));
             return ec2.describeVolumes({
-              Filters: [{Name:'tag:Name',Values: [...Array(process.env.ClusterSize).keys()].map(x => '${Tag}'+'-'+(x+1))}]
+              Filters: [{Name:'tag:Name',Values}]
             }).promise();
           }
 
