@@ -95,9 +95,6 @@ Resources:
       Runtime: nodejs12.x
       ReservedConcurrentExecutions: 1 # we don't need concurrent execution of this function while processing SQS messages
       Timeout: 60 # Should be smaller or equal than LifecycleQueue timeout
-      Environment:
-        Variables:
-          ClusterSize: !Ref ClusterSize
       Code:
         ZipFile: !Sub |
           'use strict';
@@ -130,8 +127,8 @@ Resources:
             }
           };
 
-          async function getVolumes() {
-            const Values = [...Array(process.env.ClusterSize).keys()].map(x => '${Tag}'+'-'+(x+1));
+          function getVolumes() {
+            const Values = [...Array(${ClusterSize}).keys()].map(x => '${Tag}'+'-'+(x+1));
             console.log('getVolumes', JSON.stringify(Values));
             return ec2.describeVolumes({
               Filters: [{Name:'tag:Name',Values}]
@@ -139,7 +136,7 @@ Resources:
           }
 
           function isFreshStart(Volumes) {
-            return Volumes.length < process.env.ClusterSize;
+            return Volumes.length < ${ClusterSize};
           }
 
           function getNextAvaialbleName(Volumes) {
